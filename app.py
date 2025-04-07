@@ -1,13 +1,14 @@
-from flask import Flask, request, render_template_string, send_from_directory
+from flask import Flask, request, send_file, render_template_string
 import PyPDF2
 import os
+import io
+import zipfile
 
 app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Função para dividir o PDF
-def dividir_pdf(input_pdf, output_directory):
+# Função para dividir o PDF e retornar a página como arquivo para download
+def dividir_pdf(input_pdf):
+    files = []
     with open(input_pdf, "rb") as file:
         pdf_reader = PyPDF2.PdfReader(file)
         num_pages = len(pdf_reader.pages)
@@ -16,11 +17,17 @@ def dividir_pdf(input_pdf, output_directory):
             pdf_writer = PyPDF2.PdfWriter()
             pdf_writer.add_page(pdf_reader.pages[i])
 
-            output_file = os.path.join(output_directory, f"contra_cheque_pagina_{i + 1}.pdf")
-            with open(output_file, "wb") as output_pdf:
-                pdf_writer.write(output_pdf)
+            # Utilizando buffer para armazenar o PDF em memória
+            output_pdf = io.BytesIO()
+            pdf_writer.write(output_pdf)
+            output_pdf.seek(0)
 
-# Rota principal com formulário de upload
+            # Nome do arquivo
+            file_name = f"contra_cheque_pagina_{i + 1}.pdf"
+            files.append((file_name, output_pdf))
+    return files
+
+# Página principal
 @app.route('/')
 def index():
     html_content = '''
@@ -45,7 +52,6 @@ def index():
 
             form.addEventListener("submit", async (e) => {
                 e.preventDefault();
-
                 const formData = new FormData(form);
 
                 try {
@@ -53,8 +59,14 @@ def index():
                         method: "POST",
                         body: formData
                     });
-                    const result = await response.text();
-                    resultDiv.innerHTML = `<p>${result}</p>`;
+                    const blob = await response.blob();
+                    const downloadUrl = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = downloadUrl;
+                    a.download = "pdf_dividido.zip";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
                 } catch (error) {
                     resultDiv.innerHTML = `<p>Erro: ${error.message}</p>`;
                 }
@@ -65,7 +77,7 @@ def index():
     '''
     return render_template_string(html_content)
 
-# Rota para upload do PDF
+# Rota de upload e divisão
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
     if 'pdf' not in request.files:
@@ -73,23 +85,31 @@ def upload_pdf():
     
     file = request.files['pdf']
     if file and file.filename.endswith('.pdf'):
-        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(file_path)
+        # Salva o arquivo temporariamente
+        temp_path = os.path.join('temp', file.filename)
+        os.makedirs('temp', exist_ok=True)
+        file.save(temp_path)
 
-        output_directory = os.path.join(UPLOAD_FOLDER, 'output')
-        os.makedirs(output_directory, exist_ok=True)
+        # Divide o PDF e obtém os arquivos gerados
+        pdf_files = dividir_pdf(temp_path)
 
-        dividir_pdf(file_path, output_directory)
+        # Cria um arquivo zip na memória
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for file_name, file_data in pdf_files:
+                zip_file.writestr(file_name, file_data.getvalue())
 
-        return f"PDF dividido com sucesso! Arquivos salvos na pasta: {output_directory}"
+        # Limpar o buffer e preparar para download
+        zip_buffer.seek(0)
+
+        # Remove o arquivo temporário
+        os.remove(temp_path)
+
+        # Retorna o arquivo zip para download
+        return send_file(zip_buffer, as_attachment=True, download_name="pdf_dividido.zip", mimetype='application/zip')
+
     return "Erro ao fazer o upload ou arquivo inválido."
-
-# Servir arquivos divididos
-@app.route('/uploads/<path:filename>')
-def download_file(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8000)))
-    # Para rodar localmente, use: app.run(debug=True)
-
+    # Para produção, use o comando abaixo: 
