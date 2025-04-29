@@ -27,7 +27,7 @@ def dividir_pdf(input_pdf):
             files.append((file_name, output_pdf))
     return files
 
-# Página principal (mantida igual)
+# Página principal
 @app.route('/')
 def index():
     html_content = '''
